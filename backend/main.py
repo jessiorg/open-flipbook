@@ -159,7 +159,7 @@ async def generate_for_user(
             #     await send_progress(ws, 0.5 + 0.4 * (i / len(frames)), f"Video frame {i+1}/{len(frames)}")
 
         # Always generate an image at the end
-        image_b64, seed = await generator.generate_image(
+        image_b64, seed, gen_time = await generator.generate_image(
             prompt=final_prompt,
             width=width,
             height=height,
@@ -174,6 +174,7 @@ async def generate_for_user(
             "seed": seed,
             "search_query": search_query,
             "grounding": grounding,
+            "gen_time": round(gen_time, 1),
         })
 
         # ── Update session ──
