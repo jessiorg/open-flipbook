@@ -275,10 +275,18 @@
   // ─────────────────────────────────────────────────────────────────────────
 
   function connect() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname || 'localhost';
-    const port = 8765;
-    const url = `${protocol}//${host}:${port}/ws`;
+    // Default to Modal deployment for demo
+    // Override via ?ws=ws://localhost:8765/ws for local dev
+    const params = new URLSearchParams(window.location.search);
+    const wsParam = params.get('ws');
+
+    let url;
+    if (wsParam) {
+      url = wsParam;
+    } else {
+      // Default: Modal WebSocket endpoint
+      url = 'wss://jessiorg--open-flipbook-web-web-server.modal.run/ws';
+    }
 
     ws = new WebSocket(url);
 
