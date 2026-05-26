@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenFlipbook</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a0a0a;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    }
+
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+    }
+
+    #flipbook-canvas {
+      max-width: 100%;
+      max-height: 100%;
+      cursor: crosshair;
+      display: block;
+    }
+
+    /* Input bar at bottom */
+    #input-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 16px 24px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.8) 50%);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #prompt-input {
+      flex: 1;
+      padding: 14px 20px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 100px;
+      background: rgba(255,255,255,0.05);
+      color: white;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    #prompt-input:focus {
+      border-color: rgba(255,255,255,0.4);
+      background: rgba(255,255,255,0.1);
+    }
+
+    #prompt-input::placeholder {
+      color: rgba(255,255,255,0.35);
+    }
+
+    #submit-btn {
+      padding: 14px 28px;
+      border: none;
+      border-radius: 100px;
+      background: #fff;
+      color: #000;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+
+    #submit-btn:hover {
+      transform: scale(1.03);
+    }
+
+    #submit-btn:active {
+      transform: scale(0.97);
+    }
+
+    #submit-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Progress overlay */
+    #progress-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 20px;
+      pointer-events: none;
+    }
+
+    #progress-overlay.visible {
+      display: flex;
+    }
+
+    #progress-spinner {
+      width: 48px;
+      height: 48px;
+      border: 3px solid rgba(255,255,255,0.1);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    #progress-text {
+      color: rgba(255,255,255,0.8);
+      font-size: 15px;
+    }
+
+    /* Status indicator */
+    #status-bar {
+      position: fixed;
+      top: 16px;
+      right: 20px;
+      padding: 8px 16px;
+      border-radius: 100px;
+      background: rgba(0,0,0,0.5);
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+      display: none;
+    }
+
+    #status-bar.visible {
+      display: block;
+    }
+
+    /* Loading shimmer on canvas */
+    #canvas-container.loading::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        110deg,
+        transparent 20%,
+        rgba(255,255,255,0.05) 40%,
+        rgba(255,255,255,0.08) 50%,
+        rgba(255,255,255,0.05) 60%,
+        transparent 80%
+      );
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer {
+      to { transform: translateX(100%); }
+    }
+
+    /* Hidden file input */
+    #hidden-input {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container">
+  <canvas id="flipbook-canvas"></canvas>
+</div>
+
+<div id="progress-overlay">
+  <div id="progress-spinner"></div>
+  <div id="progress-text">Initializing...</div>
+</div>
+
+<div id="status-bar">Session: <span id="session-id">—</span></div>
+
+<div id="input-bar">
+  <input
+    type="text"
+    id="prompt-input"
+    placeholder="Explore anything — type and press Enter or click anywhere on the image..."
+    autocomplete="off"
+    spellcheck="false"
+  >
+  <button id="submit-btn">Explore</button>
+</div>
+
+<script>
+  // ─────────────────────────────────────────────────────────────────────────
+  // OpenFlipbook Frontend — Pure Canvas + WebSocket
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const canvas = document.getElementById('flipbook-canvas');
+  const ctx = canvas.getContext('2d');
+  const container = document.getElementById('canvas-container');
+  const promptInput = document.getElementById('prompt-input');
+  const submitBtn = document.getElementById('submit-btn');
+  const progressOverlay = document.getElementById('progress-overlay');
+  const progressText = document.getElementById('progress-text');
+  const statusBar = document.getElementById('status-bar');
+  const sessionIdSpan = document.getElementById('session-id');
+
+  // State
+  let ws = null;
+  let sessionId = null;
+  let isGenerating = false;
+  let currentImage = null;
+
+  // Canvas sizing
+  let canvasWidth = window.innerWidth;
+  let canvasHeight = window.innerHeight - 80; // Leave room for input bar
+
+  function resizeCanvas() {
+    const maxW = window.innerWidth;
+    const maxH = window.innerHeight - 80;
+    const aspect = 1; // Square for now, can adapt to image aspect
+
+    let w = maxW;
+    let h = maxW / aspect;
+
+    if (h > maxH) {
+      h = maxH;
+      w = maxH * aspect;
+    }
+
+    canvas.width = Math.floor(w);
+    canvas.height = Math.floor(h);
+    canvasWidth = canvas.width;
+    canvasHeight = canvas.height;
+
+    // Redraw current image if any
+    if (currentImage) {
+      drawImage(currentImage);
+    }
+  }
+
+  function drawImage(img) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Fit image to canvas (contain)
+    const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+    const x = (canvas.width - img.width * scale) / 2;
+    const y = (canvas.height - img.height * scale) / 2;
+
+    ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+    currentImage = img;
+  }
+
+  function loadImageFromBase64(b64) {
+    const img = new Image();
+    img.onload = () => {
+      drawImage(img);
+      container.classList.remove('loading');
+    };
+    img.src = 'data:image/png;base64,' + b64;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WebSocket
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function connect() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname || 'localhost';
+    const port = 8765;
+    const url = `${protocol}//${host}:${port}/ws`;
+
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      console.log('[WS] Connected');
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+      await handleMessage(msg);
+    };
+
+    ws.onclose = () => {
+      console.log('[WS] Disconnected, reconnecting in 2s...');
+      setTimeout(connect, 2000);
+    };
+
+    ws.onerror = (err) => {
+      console.error('[WS] Error:', err);
+    };
+  }
+
+  async function handleMessage(msg) {
+    switch (msg.type) {
+      case 'session':
+        sessionId = msg.id;
+        sessionIdSpan.textContent = sessionId;
+        statusBar.classList.add('visible');
+        console.log('[WS] Session:', sessionId);
+        break;
+
+      case 'image':
+        isGenerating = false;
+        submitBtn.disabled = false;
+        progressOverlay.classList.remove('visible');
+        container.classList.remove('loading');
+        loadImageFromBase64(msg.data);
+        console.log('[WS] Image received:', msg.metadata);
+        break;
+
+      case 'progress':
+        progressText.textContent = msg.status || `${Math.round(msg.progress * 100)}%`;
+        break;
+
+      case 'error':
+        isGenerating = false;
+        submitBtn.disabled = false;
+        progressOverlay.classList.remove('visible');
+        container.classList.remove('loading');
+        console.error('[WS] Error:', msg.message);
+        progressText.textContent = 'Error: ' + msg.message;
+        progressOverlay.classList.add('visible');
+        setTimeout(() => progressOverlay.classList.remove('visible'), 3000);
+        break;
+
+      case 'ack':
+        console.log('[WS] Ack:', msg);
+        break;
+
+      case 'status':
+        console.log('[WS] Status:', msg);
+        break;
+    }
+  }
+
+  function send(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Interactions
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function startGeneration(prompt) {
+    if (isGenerating) return;
+    if (!prompt.trim()) return;
+
+    isGenerating = true;
+    submitBtn.disabled = true;
+    container.classList.add('loading');
+    progressOverlay.classList.add('visible');
+    progressText.textContent = 'Starting...';
+
+    send({
+      type: 'start',
+      prompt: prompt.trim(),
+      width: canvasWidth,
+      height: canvasHeight,
+    });
+  }
+
+  function sendClick(x, y) {
+    if (isGenerating) return;
+    if (!currentImage) {
+      // No image yet — treat as text input instead
+      return;
+    }
+
+    isGenerating = true;
+    submitBtn.disabled = true;
+    container.classList.add('loading');
+    progressOverlay.classList.add('visible');
+    progressText.textContent = 'Exploring...';
+
+    // Normalize click to 0-1 range
+    const normX = x / canvasWidth;
+    const normY = y / canvasHeight;
+
+    send({
+      type: 'click',
+      x: normX,
+      y: normY,
+      width: canvasWidth,
+      height: canvasHeight,
+    });
+  }
+
+  // Event listeners
+  promptInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      startGeneration(promptInput.value);
+      promptInput.value = '';
+    }
+  });
+
+  submitBtn.addEventListener('click', () => {
+    startGeneration(promptInput.value);
+    promptInput.value = '';
+  });
+
+  canvas.addEventListener('click', (e) => {
+    if (!currentImage) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    sendClick(x, y);
+  });
+
+  // Handle window resize
+  let resizeTimeout;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      resizeCanvas();
+      if (currentImage) {
+        // Signal new size to server
+        send({ type: 'resize', width: canvasWidth, height: canvasHeight });
+      }
+    }, 200);
+  });
+
+  // Initial setup
+  resizeCanvas();
+
+  // Draw initial empty state
+  function drawEmptyState() {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.font = '24px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Type a topic above to begin exploring', canvas.width / 2, canvas.height / 2);
+    ctx.font = '14px -apple-system, system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillText('Click anywhere on generated images to explore deeper', canvas.width / 2, canvas.height / 2 + 30);
+  }
+  drawEmptyState();
+
+  // Connect
+  connect();
+</script>
+
+</body>
+</html>
