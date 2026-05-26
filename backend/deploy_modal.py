@@ -26,6 +26,9 @@ IMAGE_DEPS = [
 
 app = modal.App("open-flipbook")
 
+# Attach HF_TOKEN secret for FLUX.1 gated model access
+hf_secret = modal.Secret.from_name("hf-token")
+
 # Container image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -40,9 +43,10 @@ image = (
 
 @app.cls(
     image=image,
+    secrets=[hf_secret],  # HF_TOKEN for FLUX.1 gated model
     gpu="A10",  # $0.000306/sec — ~$0.004 per 512x512 image
     timeout=300,
-    container_idle_timeout=120,  # Keep warm for 2 min between calls
+    scaledown_window=120,  # Keep warm for 2 min between calls
     retries=1,
 )
 class FluxGenerator:
@@ -120,9 +124,10 @@ class FluxGenerator:
 
 @app.function(
     image=image,
+    secrets=[hf_secret],
     gpu="A10",
     timeout=300,
-    container_idle_timeout=120,
+    scaledown_window=120,
 )
 def generate_image(prompt: str, width: int = 512, height: int = 512, seed: int = None) -> dict:
     """
